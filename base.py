@@ -16,6 +16,7 @@ from consts import XMLServiceParserConsts, XMLDeviceParserConsts
 import copy
 import socket
 from consts import SSDPConsts
+from logger import log, Level
 
 
 class Address(object):
@@ -46,37 +47,23 @@ class NetworkSocket(object):
         self.address = None
 
     def bind(self, local_interface_ip, port):
+        """
+            binds to given interface on the local port.
+        :param local_interface_ip: the ip you want to bind on (can be also 0.0.0.0 for every interface or 127.0.0.1 for loop_back)
+        :param port: local port to bind on.
+        :return:
+        """
         self.address = Address(local_interface_ip, port)
-        print self.address.get_address()
         self.socket.bind(self.address.get_address())
 
     def connect(self, local_interface_ip, port):
         self.address = Address(local_interface_ip, port)
         self.socket.connect(self.address.get_address())
+        log("connected to {ip} on port {port}".format(ip=local_interface_ip, port=port), Level.INFO)
 
-
-class UPNPSocket(NetworkSocket):
-    """
-        class for creating socket with background NAT Traversal using UPNP.
-    """
-
-    def bind(self, local_interface_ip, port):
-        self.address = Address(local_interface_ip, port)
-        self.socket.bind(self.address)
-
-    def listen(self, upnp_router, back_log):
-        """
-
-        :param UPNPRouter upnp_router: the upnp router to port forward from.
-        :param back_log: the maximum number of queued connections.
-
-        * IS blocking.
-        """
-
-        if not upnp_router.is_discovered:
-            upnp_router.discover()
-
-        self.socket.listen(back_log)
+    def send(self, data):
+        num_of_bytes = self.socket.send(data)
+        log("sent {length} bytes.".format(length=num_of_bytes), Level.INFO)
 
 
 class MultiCastSocket(object):
@@ -90,22 +77,25 @@ class MultiCastSocket(object):
         self.is_on_group = False
         self.address = None
 
-    def join_group(self, multicast_ip, port, interface_ip):
+    def join_group(self, multicast_ip, interface_ip):
         """
-            join the multicast ip group.
-        :return:
+            joins the multicast ip group.
+            :param multicast_ip: the multicast ip to join
+            :param interface_ip: the interface from which you want to join.
         """
 
-        self.address = Address(multicast_ip, port)
         mreq = socket.inet_aton(multicast_ip) + socket.inet_aton(interface_ip)
-        print self.address.ip, self.address.port
+        # TODO: fix this to a single socket.
         self._sending.socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, str(mreq))
         self._listening.socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, str(mreq))
+        log("successfully join the group {group} with the interface {ip}".format(group=multicast_ip, ip=interface_ip),
+            Level.INFO)
         self.is_on_group = True
 
     def connect(self, multicast_ip, port):
         self._sending.connect(multicast_ip, port)
 
+    # TODO: deprecated..
     def bind(self, multicast_ip, port):
         """
 
@@ -118,12 +108,13 @@ class MultiCastSocket(object):
         self._listening.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._listening.socket.bind((self.address.ip, self.address.port))
 
+    # TODO: DEPRECATED, NOT SUPPOSED TO BE WORKING..
     def receive(self):
         data, address = self._listening.socket.recvfrom(2048)
         return data
 
     def send(self, data):
-        self._sending.socket.send(data)
+        self._sending.send(data)
 
     def listen(self, back_log):
         self._listening.socket.listen(back_log)
@@ -147,21 +138,25 @@ class SSDPSocket(MultiCastSocket):
         """
         upnp_hosts = []
         try:
+            # opens a listener on the sending port because upnp hosts will send you directly packets to the local port.
             ip, port = self._sending.socket.getsockname()
             sock_listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            # to be able to use same port as sending socket.
             sock_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock_listener.settimeout(10)
+            sock_listener.settimeout(3)
             sock_listener.bind((ip, port))
 
             self.send_multi_search()
 
             while 1:
                 data, address = sock_listener.recvfrom(1024)
-                if address[0] == '10.0.0.138':
-                    upnp_hosts.append(UPNPHost.parse_to_upnp_host(data))
+                log("found the host {host}".format(host=address[0]), Level.INFO)
+                upnp_hosts.append(UPNPHost.parse_to_upnp_host(data))
 
         except KeyboardInterrupt:
             print "finished!"
+        except socket.timeout:
+            log("could not found any more hosts.. finished..", Level.INFO)
         except Exception as e:
             print type(e), e
 
@@ -181,14 +176,15 @@ class SSDPSocket(MultiCastSocket):
                                                            search_target=SSDPConsts.DEFAULT_ST)
         self.connect()
         self.send(packet)
+        log("sent m-search packet..", Level.INFO)
 
     def connect(self, multicast_ip=SSDPConsts.DEFAULT_SSDP_MULTICAST_ADDRESS,
                 port=SSDPConsts.DEFAULT_SSDP_MULTICAST_PORT):
         super(SSDPSocket, self).connect(multicast_ip, port)
 
     def join_group(self, multicast_ip=SSDPConsts.DEFAULT_SSDP_MULTICAST_ADDRESS,
-                   port=SSDPConsts.DEFAULT_SSDP_MULTICAST_PORT, interface_ip="10.0.0.1"):
-        super(SSDPSocket, self).join_group(multicast_ip, port, interface_ip)
+                   port=SSDPConsts.DEFAULT_SSDP_MULTICAST_PORT, interface_ip="10.0.0.7"):
+        super(SSDPSocket, self).join_group(multicast_ip, interface_ip)
 
 
 class UPNPHost(object):
@@ -240,15 +236,18 @@ class UPNPHost(object):
         if self.upnp_devices:
             return self.upnp_devices
 
+        log("getting for the first time details about devices from upnp host - {host}".format(host=self.address.ip),
+            Level.INFO)
         request = requests.get(self.location, headers=UPNPConsts.XML_GET_HEADERS)
         if str(request.status_code) != UPNPConsts.HTTP_OK_CODE_NUMBER:
             raise Exception('xml not found..')
+        log("successfully got xml file from host", Level.INFO)
 
-        # TODO LOGGING.
         xml_data = request.text
 
         xml_object = XmlObject.parse_xml(xml_data)
         self.upnp_devices = UPNPDevice.get_upnp_devices(xml_object)
+        log('finished parsing devices!', Level.INFO)
         return self.upnp_devices
 
     def parse_location(self):
@@ -283,10 +282,10 @@ class UPNPHost(object):
             object_attributes = {}
             for header in lines:
                 if header:
-                    print "header - " + header
+                    # LOGS.. print "header - " + header
                     match = re.match(UPNPConsts.SSDP_UPNP_HEADER_PATTERN, header)
                     name = match.group(UPNPConsts.HEADER_NAME_PATTERN)
-                    print match.groups()
+                    # LOGS.. print match.groups()
                     name = name.replace('.', '_').replace('-', '_')
                     object_attributes[name.lower()] = match.group(UPNPConsts.HEADER_DATA_PATTERN)
 

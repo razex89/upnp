@@ -266,7 +266,7 @@ class upnp:
                 # Get the new host's index number and create an entry in ENUM_HOSTS
                 index = len(self.ENUM_HOSTS)
                 self.ENUM_HOSTS[index] = {'name': host, 'dataComplete': False, 'proto': protocol, 'xmlFile': xmlFile,
-                    'serverType': None, 'upnpServer': upnpType, 'deviceList': {}}
+                                          'serverType': None, 'upnpServer': upnpType, 'deviceList': {}}
                 # Be sure to update the command completer so we can tab complete through this host's data structure
                 self.updateCmdCompleter(self.ENUM_HOSTS)
 
@@ -343,7 +343,7 @@ class upnp:
 
         # Specify the headers to send with the request
         headers = {'Host': hostName, 'Content-Length': len(soapBody), 'Content-Type': 'text/xml',
-            'SOAPAction': '"%s#%s"' % (serviceType, actionName)}
+                   'SOAPAction': '"%s#%s"' % (serviceType, actionName)}
 
         # Generate the final payload
         for head, value in headers.iteritems():
